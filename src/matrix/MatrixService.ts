@@ -15,6 +15,48 @@ type Credentials = {
   password: string;
 };
 
+type WellKnownClientConfig = {
+  'm.homeserver'?: {
+    base_url?: unknown;
+  };
+};
+
+const normalizeServerUrl = (server: string): string =>
+  (/^https?:\/\//i.test(server) ? server : `https://${server}`).replace(/\/+$/, '');
+
+const discoverHomeserver = async (server: string): Promise<string> => {
+  const host = normalizeServerUrl(server);
+  try {
+    const response = await fetch(`${host}/.well-known/matrix/client`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (response.status === 404) return host;
+    if (!response.ok) throw new Error(`服务器发现请求失败（HTTP ${response.status}）`);
+
+    const config = (await response.json()) as WellKnownClientConfig;
+    const discovered = config['m.homeserver']?.base_url;
+    if (typeof discovered === 'string' && /^https?:\/\//i.test(discovered)) {
+      return normalizeServerUrl(discovered);
+    }
+    throw new Error('服务器发现配置中没有有效的 m.homeserver.base_url');
+  } catch {
+    // 网络错误时按原项目逻辑回退到用户输入的地址；随后由 versions 校验给出准确结果。
+    return host;
+  }
+};
+
+const validateHomeserver = async (baseUrl: string): Promise<void> => {
+  const response = await fetch(`${baseUrl}/_matrix/client/versions`, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error(`家服务器不可用（HTTP ${response.status}）`);
+
+  const payload = (await response.json()) as { versions?: unknown };
+  if (!Array.isArray(payload.versions)) {
+    throw new Error('该地址不是有效的 Matrix 家服务器');
+  }
+};
+
 export class MatrixService {
   private client?: MatrixClient;
   private listeners = new Set<() => void>();
@@ -31,8 +73,9 @@ export class MatrixService {
   }
 
   async login({ baseUrl, user, password }: Credentials): Promise<MatrixSession> {
-    const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '');
-    const temporaryClient = createClient({ baseUrl: normalizedBaseUrl });
+    const homeserverUrl = await discoverHomeserver(baseUrl.trim());
+    await validateHomeserver(homeserverUrl);
+    const temporaryClient = createClient({ baseUrl: homeserverUrl });
     const response = await temporaryClient.login('m.login.password', {
       user: user.trim(),
       password,
@@ -44,7 +87,7 @@ export class MatrixService {
     }
 
     return {
-      baseUrl: normalizedBaseUrl,
+      baseUrl: homeserverUrl,
       accessToken: response.access_token,
       userId: response.user_id,
       deviceId: response.device_id,

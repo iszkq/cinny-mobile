@@ -12,7 +12,7 @@
 - Capacitor Android 工程
 - GitHub Actions 自动构建并上传 Debug APK
 
-> 登录时请填写可从公网访问、已配置 TLS 证书的 `https://` Matrix Homeserver 地址，例如 `https://matrix.org`。Android 版本已启用 Capacitor 原生 HTTP，以避免 WebView 的跨域（CORS）限制。
+> 登录时请填写可从公网访问、已配置 TLS 证书的 `https://` Matrix 地址。App 会自动读取标准 `.well-known/matrix/client` 发现文件并连接真正的 Homeserver：例如填写默认的 `https://mtx01.cc`，实际会连接其声明的 `https://matrix.mtx01.cc`。Android 版本已启用 Capacitor 原生 HTTP，以避免 WebView 的跨域（CORS）限制。
 
 ## 本地开发（可选）
 
