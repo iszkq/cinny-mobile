@@ -28,6 +28,7 @@ import {
   UserOutline,
 } from 'antd-mobile-icons';
 import { MatrixProvider, useMatrix } from './matrix/MatrixProvider';
+import { useEdgeBackGesture } from './hooks/useEdgeBackGesture';
 
 type TabKey = 'chats' | 'contacts' | 'discover' | 'profile';
 
@@ -401,6 +402,7 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
   const [roomMenuOpen, setRoomMenuOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const room = client?.getRoom(roomId);
+  const edgeBack = useEdgeBackGesture(close);
   const events = useMemo(
     () => room?.getLiveTimeline().getEvents().filter((event) => event.getType() === 'm.room.message') ?? [],
     [room, revision]
@@ -490,7 +492,7 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
   };
 
   return (
-    <main className="chat-page">
+    <main className="chat-page" {...edgeBack}>
       <NavBar back="消息" onBack={close} right={<button className="plain-icon" type="button" onClick={() => setRoomMenuOpen(true)}><MoreOutline /></button>}>
         <span className="chat-title">{roomTitle(room)}</span>
       </NavBar>
