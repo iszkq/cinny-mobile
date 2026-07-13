@@ -327,10 +327,47 @@ function ProfilePage() {
   );
 }
 
+function RoomMenu({ room, visible, close }: { room: Room; visible: boolean; close: () => void }) {
+  const { client } = useMatrix();
+  const [memberId, setMemberId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const invite = async () => {
+    if (!client || !memberId.trim()) return;
+    setBusy(true);
+    try {
+      await client.invite(room.roomId, memberId.trim());
+      setMemberId('');
+      Toast.show({ icon: 'success', content: '已发送邀请' });
+    } catch {
+      Toast.show({ icon: 'fail', content: '邀请失败，请检查用户 ID 和权限' });
+    } finally { setBusy(false); }
+  };
+  const leave = async () => {
+    if (!client) return;
+    const confirmed = await Dialog.confirm({ content: `确定离开“${roomTitle(room)}”吗？`, confirmText: '离开房间' });
+    if (!confirmed) return;
+    try { await client.leave(room.roomId); close(); } catch { Toast.show({ icon: 'fail', content: '离开房间失败' }); }
+  };
+  return (
+    <Popup visible={visible} onMaskClick={close} position="bottom" bodyStyle={{ borderRadius: '18px 18px 0 0' }}>
+      <section className="new-chat-panel">
+        <div className="sheet-handle" /><h2>房间操作</h2>
+        <Form layout="vertical" requiredMarkStyle="none"><Form.Item label="邀请成员"><Input value={memberId} onChange={setMemberId} placeholder="@alice:mtx01.cc" clearable /></Form.Item></Form>
+        <Button block color="primary" loading={busy} onClick={invite}>发送邀请</Button>
+        <Button block color="danger" fill="none" className="leave-room-button" onClick={leave}>离开房间</Button>
+      </section>
+    </Popup>
+  );
+}
+
 function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
   const { client, session, revision } = useMatrix();
   const [text, setText] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [replyTo, setReplyTo] = useState<MatrixEvent>();
+  const [editing, setEditing] = useState<MatrixEvent>();
+  const [activeEvent, setActiveEvent] = useState<MatrixEvent>();
+  const [roomMenuOpen, setRoomMenuOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const room = client?.getRoom(roomId);
   const events = useMemo(
@@ -344,10 +381,49 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
     if (!body) return;
     setText('');
     try {
-      await client.sendTextMessage(room.roomId, body);
+      if (editing?.getId()) {
+        await client.sendEvent(room.roomId, 'm.room.message' as any, {
+          msgtype: MsgType.Text,
+          body: `* ${body}`,
+          'm.new_content': { msgtype: MsgType.Text, body },
+          'm.relates_to': { rel_type: 'm.replace', event_id: editing.getId() },
+        });
+        setEditing(undefined);
+      } else if (replyTo?.getId()) {
+        await client.sendEvent(room.roomId, 'm.room.message' as any, {
+          msgtype: MsgType.Text,
+          body,
+          'm.relates_to': { 'm.in_reply_to': { event_id: replyTo.getId() } },
+        });
+        setReplyTo(undefined);
+      } else {
+        await client.sendTextMessage(room.roomId, body);
+      }
     } catch {
       setText(body);
       Toast.show({ icon: 'fail', content: '消息发送失败，请检查网络' });
+    }
+  };
+
+  const reactToEvent = async (event: MatrixEvent) => {
+    if (!event.getId()) return;
+    try {
+      await client.sendEvent(room.roomId, 'm.reaction' as any, {
+        'm.relates_to': { rel_type: 'm.annotation', event_id: event.getId(), key: '👍' },
+      });
+    } catch {
+      Toast.show({ icon: 'fail', content: '添加反应失败' });
+    }
+  };
+
+  const redactEvent = async (event: MatrixEvent) => {
+    if (!event.getId()) return;
+    const confirmed = await Dialog.confirm({ content: '撤回后其他成员将无法查看该消息。', confirmText: '撤回' });
+    if (!confirmed) return;
+    try {
+      await client.redactEvent(room.roomId, event.getId()!);
+    } catch {
+      Toast.show({ icon: 'fail', content: '撤回失败' });
     }
   };
 
@@ -384,7 +460,7 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
 
   return (
     <main className="chat-page">
-      <NavBar back="消息" onBack={close} right={<button className="plain-icon" type="button"><MoreOutline /></button>}>
+      <NavBar back="消息" onBack={close} right={<button className="plain-icon" type="button" onClick={() => setRoomMenuOpen(true)}><MoreOutline /></button>}>
         <span className="chat-title">{roomTitle(room)}</span>
       </NavBar>
       {room.hasEncryptionStateEvent() && <div className="secure-banner">⌁ 此会话已启用端到端加密</div>}
@@ -400,23 +476,34 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
           return (
             <article className={`message ${mine ? 'mine' : ''}`} key={event.getId() ?? `${event.getTs()}-${event.getSender()}`}>
               {!mine && <div className="message-avatar">{initials(event.getSender() ?? '?')}</div>}
-              <div>
+              <div className="message-content">
                 {!mine && <p className="sender-name">{event.sender?.name ?? event.getSender()}</p>}
                 <div className={`bubble ${image ? 'image-bubble' : ''}`}>
                   {image ? <img src={mediaUrl} alt={typeof content.body === 'string' ? content.body : '图片'} /> : file ? <a href={mediaUrl} target="_blank" rel="noreferrer">附件：{typeof content.body === 'string' ? content.body : '下载文件'}</a> : typeof content.body === 'string' ? content.body : '[暂不支持的消息]'}
                 </div>
                 <time>{displayTime(event.getTs())}</time>
               </div>
+              <button className="message-action" onClick={() => setActiveEvent(event)} type="button" aria-label="消息操作">⋯</button>
             </article>
           );
         })}
       </div>
       <footer className="composer">
+        {(replyTo || editing) && <div className="composer-context"><span>{editing ? '正在编辑消息' : `回复 ${replyTo?.sender?.name ?? replyTo?.getSender()}`}</span><button type="button" onClick={() => { setReplyTo(undefined); setEditing(undefined); }}>×</button></div>}
         <input ref={fileInput} className="file-input" type="file" onChange={uploadFile} />
         <button className="attach-button" onClick={() => fileInput.current?.click()} type="button" aria-label="发送图片或文件">＋</button>
         <TextArea value={text} onChange={setText} autoSize={{ minRows: 1, maxRows: 4 }} placeholder="说点什么…" />
         <button className="send-button" onClick={send} type="button" aria-label="发送消息"><SendOutline /></button>
       </footer>
+      <Popup visible={!!activeEvent} onMaskClick={() => setActiveEvent(undefined)} position="bottom" bodyStyle={{ borderRadius: '18px 18px 0 0' }}>
+        <section className="message-menu">
+          <Button block fill="none" onClick={() => { if (activeEvent) { setReplyTo(activeEvent); setActiveEvent(undefined); } }}>回复</Button>
+          <Button block fill="none" onClick={() => { if (activeEvent) { void reactToEvent(activeEvent); setActiveEvent(undefined); } }}>👍 添加反应</Button>
+          {activeEvent?.getSender() === session?.userId && <Button block fill="none" onClick={() => { const body = activeEvent!.getContent().body; setText(typeof body === 'string' ? body : ''); setEditing(activeEvent!); setActiveEvent(undefined); }}>编辑</Button>}
+          {activeEvent?.getSender() === session?.userId && <Button block fill="none" color="danger" onClick={() => { if (activeEvent) void redactEvent(activeEvent); setActiveEvent(undefined); }}>撤回</Button>}
+        </section>
+      </Popup>
+      <RoomMenu room={room} visible={roomMenuOpen} close={() => setRoomMenuOpen(false)} />
     </main>
   );
 }
