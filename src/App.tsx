@@ -1,6 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { MatrixEvent, Room } from 'matrix-js-sdk';
 import { MsgType, NotificationCountType, Preset } from 'matrix-js-sdk';
+import { App as CapacitorApp } from '@capacitor/app';
 import {
   Badge,
   Button,
@@ -9,6 +10,7 @@ import {
   Empty,
   ErrorBlock,
   Form,
+  ImageViewer,
   Input,
   List,
   NavBar,
@@ -28,7 +30,6 @@ import {
   UserOutline,
 } from 'antd-mobile-icons';
 import { MatrixProvider, useMatrix } from './matrix/MatrixProvider';
-import { useEdgeBackGesture } from './hooks/useEdgeBackGesture';
 
 type TabKey = 'chats' | 'contacts' | 'discover' | 'profile';
 
@@ -43,6 +44,10 @@ const displayTime = (timestamp?: number): string => {
 };
 
 const roomTitle = (room: Room): string => room.name || room.roomId;
+const roomTopic = (room: Room): string | undefined => {
+  const topic = room.currentState.getStateEvents('m.room.topic', '')?.getContent().topic;
+  return typeof topic === 'string' ? topic : undefined;
+};
 
 const eventText = (event?: MatrixEvent): string => {
   if (!event) return '开始一段新的对话';
@@ -80,9 +85,13 @@ function MessageBody({ event, client, accessToken }: { event: MatrixEvent; clien
     ? client.mxcUrlToHttp(content.url, 960, 960, 'scale', undefined, false, true)
     : null;
   const mediaUrl = useAuthenticatedMediaUrl(mediaSource, accessToken);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const isImage = content.msgtype === MsgType.Image;
   const isFile = content.msgtype === MsgType.File;
-  if (isImage) return mediaUrl ? <div className="bubble image-bubble"><img src={mediaUrl} alt={typeof content.body === 'string' ? content.body : '图片'} /></div> : <div className="bubble media-loading">正在加载图片…</div>;
+  if (isImage) return mediaUrl ? <>
+    <button className="bubble image-bubble" type="button" onClick={() => setPreviewOpen(true)} aria-label="预览图片"><img src={mediaUrl} alt={typeof content.body === 'string' ? content.body : '图片'} /></button>
+    <ImageViewer image={mediaUrl} visible={previewOpen} onClose={() => setPreviewOpen(false)} />
+  </> : <div className="bubble media-loading">正在加载图片…</div>;
   if (isFile) return mediaUrl ? <div className="bubble"><a href={mediaUrl} download={typeof content.body === 'string' ? content.body : undefined}>附件：{typeof content.body === 'string' ? content.body : '下载文件'}</a></div> : <div className="bubble media-loading">正在加载附件…</div>;
   return <div className="bubble">{typeof content.body === 'string' ? content.body : '[暂不支持的消息]'}</div>;
 }
@@ -146,7 +155,19 @@ function LoginPage() {
 }
 
 function RoomAvatar({ room }: { room: Room }) {
-  return <div className="room-avatar">{initials(roomTitle(room))}</div>;
+  const { session } = useMatrix();
+  const source = session ? room.getAvatarUrl(session.baseUrl, 96, 96, 'crop', undefined, true) : null;
+  const imageUrl = useAuthenticatedMediaUrl(source, session?.accessToken);
+  return imageUrl ? <img className="room-avatar" src={imageUrl} alt="" /> : <div className="room-avatar">{initials(roomTitle(room))}</div>;
+}
+
+function SenderAvatar({ event }: { event: MatrixEvent }) {
+  const { session } = useMatrix();
+  const source = session && event.sender
+    ? event.sender.getAvatarUrl(session.baseUrl, 64, 64, 'crop', undefined, false, true)
+    : null;
+  const imageUrl = useAuthenticatedMediaUrl(source, session?.accessToken);
+  return imageUrl ? <img className="message-avatar" src={imageUrl} alt="" /> : <div className="message-avatar">{initials(event.getSender() ?? '?')}</div>;
 }
 
 function ChatsPage({
@@ -321,17 +342,50 @@ function ContactsPage() {
   );
 }
 
-function DiscoverPage() {
+type PublicRoom = { room_id: string; name?: string; topic?: string; num_joined_members?: number };
+
+function DiscoverPage({ openRoom }: { openRoom: (roomId: string) => void }) {
+  const { client, revision } = useMatrix();
+  const [publicRooms, setPublicRooms] = useState<PublicRoom[]>([]);
+  const [loading, setLoading] = useState(false);
+  const invites = useMemo(
+    () => client?.getRooms().filter((room) => room.getMyMembership() === 'invite') ?? [],
+    [client, revision]
+  );
+  const loadPublicRooms = async () => {
+    if (!client) return;
+    setLoading(true);
+    try {
+      const result = await client.publicRooms({ limit: 20 });
+      setPublicRooms(result.chunk as PublicRoom[]);
+    } catch {
+      Toast.show({ icon: 'fail', content: '公共房间加载失败' });
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { void loadPublicRooms(); }, [client]);
+  const acceptInvite = async (room: Room) => {
+    if (!client) return;
+    try { await client.joinRoom(room.roomId); openRoom(room.roomId); } catch { Toast.show({ icon: 'fail', content: '接受邀请失败' }); }
+  };
+  const rejectInvite = async (room: Room) => {
+    if (!client) return;
+    try { await client.leave(room.roomId); } catch { Toast.show({ icon: 'fail', content: '拒绝邀请失败' }); }
+  };
+  const joinPublicRoom = async (room: PublicRoom) => {
+    if (!client) return;
+    try { const joined = await client.joinRoom(room.room_id); openRoom(joined.roomId); } catch { Toast.show({ icon: 'fail', content: '加入房间失败' }); }
+  };
   return (
     <section className="tab-page">
       <header className="page-header"><div><p className="eyebrow">EXPLORE</p><h2>发现</h2></div></header>
-      <div className="discover-hero"><p>今天，和世界保持一点连接。</p><strong>探索你的 Matrix 空间</strong></div>
-      <div className="discover-grid">
-        <article><span>◌</span><strong>公共房间</strong><p>发现同好社区</p></article>
-        <article><span>◇</span><strong>我的空间</strong><p>整理重要会话</p></article>
-        <article><span>⌁</span><strong>邀请</strong><p>查看等待处理的邀请</p></article>
-        <article><span>◎</span><strong>收藏</strong><p>回看重要消息</p></article>
-      </div>
+      {invites.length > 0 && <List className="soft-list" header="房间邀请">
+        {invites.map((room) => <List.Item key={room.roomId} description={roomTopic(room) || '邀请你加入此房间'} extra={<div className="invite-actions"><button onClick={() => void acceptInvite(room)}>接受</button><button onClick={() => void rejectInvite(room)}>拒绝</button></div>}>{roomTitle(room)}</List.Item>)}
+      </List>}
+      <div className="discover-section-title"><span>公共房间</span><Button size="mini" fill="none" loading={loading} onClick={loadPublicRooms}>刷新</Button></div>
+      <List className="soft-list public-rooms">
+        {publicRooms.map((room) => <List.Item key={room.room_id} description={room.topic || `${room.num_joined_members ?? 0} 位成员`} extra={<Button size="mini" color="primary" onClick={() => void joinPublicRoom(room)}>加入</Button>}>{room.name || room.room_id}</List.Item>)}
+        {!loading && publicRooms.length === 0 && <List.Item description="当前服务器没有公开房间，或目录功能未开启">暂无公共房间</List.Item>}
+      </List>
     </section>
   );
 }
@@ -402,7 +456,6 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
   const [roomMenuOpen, setRoomMenuOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const room = client?.getRoom(roomId);
-  const edgeBack = useEdgeBackGesture(close);
   const events = useMemo(
     () => room?.getLiveTimeline().getEvents().filter((event) => event.getType() === 'm.room.message') ?? [],
     [room, revision]
@@ -492,7 +545,7 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
   };
 
   return (
-    <main className="chat-page" {...edgeBack}>
+    <main className="chat-page">
       <NavBar back="消息" onBack={close} right={<button className="plain-icon" type="button" onClick={() => setRoomMenuOpen(true)}><MoreOutline /></button>}>
         <span className="chat-title">{roomTitle(room)}</span>
       </NavBar>
@@ -504,7 +557,7 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
           const mine = event.getSender() === session?.userId;
           return (
             <article className={`message ${mine ? 'mine' : ''}`} key={event.getId() ?? `${event.getTs()}-${event.getSender()}`}>
-              {!mine && <div className="message-avatar">{initials(event.getSender() ?? '?')}</div>}
+              {!mine && <SenderAvatar event={event} />}
               <div className="message-content">
                 {!mine && <p className="sender-name">{event.sender?.name ?? event.getSender()}</p>}
                 <MessageBody event={event} client={client} accessToken={session?.accessToken} />
@@ -551,7 +604,7 @@ function AppShell() {
   const pages: Record<TabKey, React.ReactNode> = {
     chats: <ChatsPage openRoom={setActiveRoomId} openNewChat={() => setNewConversationOpen(true)} />,
     contacts: <ContactsPage />,
-    discover: <DiscoverPage />,
+    discover: <DiscoverPage openRoom={setActiveRoomId} />,
     profile: <ProfilePage />,
   };
   return (
