@@ -4,12 +4,15 @@
 
 ## 已有能力
 
-- Matrix 密码登录与设备创建
+- Matrix 密码登录与设备创建（默认 Homeserver：`https://mtx01.cc`）
 - 房间同步、会话列表、未读数与端到端加密状态标记
-- 房间消息浏览与纯文本发送
+- 新建私聊、群聊与加入已有房间
+- 房间消息浏览、加载早期消息、纯文本/图片/文件发送
 - 中文移动端四栏导航：消息、联系人、发现、我的
 - Capacitor Android 工程
 - GitHub Actions 自动构建并上传 Debug APK
+
+> 登录时请填写可从公网访问、已配置 TLS 证书的 `https://` Matrix Homeserver 地址，例如 `https://matrix.org`。Android 版本已启用 Capacitor 原生 HTTP，以避免 WebView 的跨域（CORS）限制。
 
 ## 本地开发（可选）
 
@@ -50,7 +53,7 @@ git push -u origin main
 1. 使用 Android Keystore 签名 Release AAB/APK。
 2. 配置 FCM 与 Matrix 推送网关，支持后台消息通知。
 3. 将登录令牌从 Preferences 迁移至 Android Keystore 加密存储。
-4. 完成加密设备验证、密钥备份恢复、图片/文件上传与下载。
+4. 完成加密设备验证、密钥备份恢复与完整的媒体下载管理。
 5. 替换默认 Android 图标、包名 `com.qingjian.chat` 和“青笺”品牌文案。
 
 ## 许可证提醒

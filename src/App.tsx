@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { ChangeEvent, useMemo, useRef, useState } from 'react';
 import type { MatrixEvent, Room } from 'matrix-js-sdk';
-import { MsgType, NotificationCountType } from 'matrix-js-sdk';
+import { MsgType, NotificationCountType, Preset } from 'matrix-js-sdk';
 import {
   Badge,
   Button,
@@ -9,20 +9,18 @@ import {
   Empty,
   ErrorBlock,
   Form,
-  InfiniteScroll,
   Input,
   List,
   NavBar,
   PullToRefresh,
+  Popup,
   SearchBar,
-  Space,
   TabBar,
   TextArea,
   Toast,
 } from 'antd-mobile';
 import {
   CompassOutline,
-  LeftOutline,
   MessageOutline,
   MoreOutline,
   SendOutline,
@@ -59,7 +57,7 @@ const initials = (name: string): string => name.trim().slice(0, 1).toUpperCase()
 
 function LoginPage() {
   const { login, error, state } = useMatrix();
-  const [baseUrl, setBaseUrl] = useState('https://matrix.org');
+  const [baseUrl, setBaseUrl] = useState('https://mtx01.cc');
   const [user, setUser] = useState('');
   const [password, setPassword] = useState('');
   const submitting = state === 'connecting';
@@ -67,6 +65,10 @@ function LoginPage() {
   const submit = async () => {
     if (!baseUrl || !user || !password) {
       Toast.show({ content: '请完整填写服务器、账号和密码' });
+      return;
+    }
+    if (!/^https:\/\//i.test(baseUrl.trim())) {
+      Toast.show({ content: '请输入以 https:// 开头的服务器地址' });
       return;
     }
     try {
@@ -79,20 +81,19 @@ function LoginPage() {
 
   return (
     <main className="login-page">
-      <section className="brand-panel">
-        <div className="brand-seal">笺</div>
-        <p className="eyebrow">QINGJIAN · MATRIX</p>
-        <h1>把每一句话，<br />好好安放。</h1>
-        <p className="brand-copy">青笺是一款为中文用户打造的简洁、安全 Matrix 聊天客户端。</p>
-      </section>
-      <section className="login-card">
-        <div className="login-heading">
-          <h2>登录</h2>
-          <p>连接你的 Matrix 账号，继续会话。</p>
+      <section className="login-shell">
+        <div className="login-brand" aria-label="青笺 Matrix">
+          <div className="login-mark">M</div>
+          <span>青笺</span>
         </div>
+        <div className="login-heading">
+          <h1>登录 Matrix</h1>
+          <p>使用你的账号继续。</p>
+        </div>
+        <section className="login-card">
         <Form layout="vertical" requiredMarkStyle="none">
           <Form.Item label="服务器地址">
-            <Input value={baseUrl} onChange={setBaseUrl} placeholder="https://matrix.org" clearable />
+            <Input value={baseUrl} onChange={setBaseUrl} placeholder="https://mtx01.cc" clearable />
           </Form.Item>
           <Form.Item label="账号">
             <Input value={user} onChange={setUser} placeholder="用户名或完整 Matrix ID" clearable />
@@ -103,9 +104,10 @@ function LoginPage() {
         </Form>
         {error && <div className="login-error">{error}</div>}
         <Button block color="primary" size="large" loading={submitting} onClick={submit}>
-          进入青笺
+          登录
         </Button>
-        <p className="login-tip">首次登录会创建一台“青笺 Android”设备；加密房间可在登录后完成验证或恢复密钥。</p>
+        </section>
+        <p className="login-tip">首次登录会创建一台新设备；加密房间可在登录后验证或恢复密钥。</p>
       </section>
     </main>
   );
@@ -115,7 +117,13 @@ function RoomAvatar({ room }: { room: Room }) {
   return <div className="room-avatar">{initials(roomTitle(room))}</div>;
 }
 
-function ChatsPage({ openRoom }: { openRoom: (roomId: string) => void }) {
+function ChatsPage({
+  openRoom,
+  openNewChat,
+}: {
+  openRoom: (roomId: string) => void;
+  openNewChat: () => void;
+}) {
   const { client, revision } = useMatrix();
   const [keyword, setKeyword] = useState('');
   const rooms = useMemo(() => {
@@ -139,7 +147,7 @@ function ChatsPage({ openRoom }: { openRoom: (roomId: string) => void }) {
           <p className="eyebrow">QINGJIAN</p>
           <h2>消息</h2>
         </div>
-        <button className="round-button" type="button" aria-label="更多菜单"><MoreOutline /></button>
+        <button className="round-button" type="button" aria-label="新建会话" onClick={openNewChat}>＋</button>
       </header>
       <div className="search-wrap"><SearchBar value={keyword} onChange={setKeyword} placeholder="搜索会话" /></div>
       <PullToRefresh onRefresh={refresh}>
@@ -168,6 +176,96 @@ function ChatsPage({ openRoom }: { openRoom: (roomId: string) => void }) {
         </div>
       </PullToRefresh>
     </section>
+  );
+}
+
+type ConversationMode = 'direct' | 'group' | 'join';
+
+function NewConversationPopup({
+  visible,
+  close,
+  openRoom,
+}: {
+  visible: boolean;
+  close: () => void;
+  openRoom: (roomId: string) => void;
+}) {
+  const { client } = useMatrix();
+  const [mode, setMode] = useState<ConversationMode>('direct');
+  const [members, setMembers] = useState('');
+  const [roomName, setRoomName] = useState('');
+  const [roomIdOrAlias, setRoomIdOrAlias] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const memberIds = members.split(/[\s,，]+/).map((value) => value.trim()).filter(Boolean);
+  const submit = async () => {
+    if (!client) return;
+    if (mode === 'join' && !roomIdOrAlias.trim()) {
+      Toast.show({ content: '请输入房间 ID 或别名' });
+      return;
+    }
+    if (mode !== 'join' && memberIds.length === 0) {
+      Toast.show({ content: '请输入至少一个 Matrix 用户 ID' });
+      return;
+    }
+    if (mode === 'group' && !roomName.trim()) {
+      Toast.show({ content: '请输入群聊名称' });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      if (mode === 'join') {
+        const room = await client.joinRoom(roomIdOrAlias.trim());
+        openRoom(room.roomId);
+      } else {
+        const created = await client.createRoom(
+          mode === 'direct'
+            ? { invite: memberIds, is_direct: true, preset: Preset.TrustedPrivateChat }
+            : { name: roomName.trim(), invite: memberIds, preset: Preset.PrivateChat }
+        );
+        if (mode === 'direct') {
+          const existing = (client.getAccountData('m.direct' as any)?.getContent() ?? {}) as Record<string, string[]>;
+          const updated = { ...existing };
+          memberIds.forEach((memberId) => {
+            updated[memberId] = [...new Set([...(updated[memberId] ?? []), created.room_id])];
+          });
+          await client.setAccountData('m.direct' as any, updated as any);
+        }
+        openRoom(created.room_id);
+      }
+      close();
+    } catch (cause) {
+      Toast.show({ icon: 'fail', content: cause instanceof Error ? cause.message : '操作失败，请稍后重试' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Popup visible={visible} onMaskClick={close} position="bottom" bodyStyle={{ borderRadius: '18px 18px 0 0' }}>
+      <section className="new-chat-panel">
+        <div className="sheet-handle" />
+        <h2>新建会话</h2>
+        <div className="mode-tabs">
+          <button className={mode === 'direct' ? 'selected' : ''} onClick={() => setMode('direct')} type="button">私聊</button>
+          <button className={mode === 'group' ? 'selected' : ''} onClick={() => setMode('group')} type="button">群聊</button>
+          <button className={mode === 'join' ? 'selected' : ''} onClick={() => setMode('join')} type="button">加入房间</button>
+        </div>
+        {mode === 'join' ? (
+          <Form layout="vertical" requiredMarkStyle="none">
+            <Form.Item label="房间 ID 或别名"><Input value={roomIdOrAlias} onChange={setRoomIdOrAlias} placeholder="!room:mtx01.cc 或 #room:mtx01.cc" clearable /></Form.Item>
+          </Form>
+        ) : (
+          <Form layout="vertical" requiredMarkStyle="none">
+            {mode === 'group' && <Form.Item label="群聊名称"><Input value={roomName} onChange={setRoomName} placeholder="例如：项目讨论组" clearable /></Form.Item>}
+            <Form.Item label={mode === 'direct' ? '对方 Matrix ID' : '邀请成员'}>
+              <Input value={members} onChange={setMembers} placeholder="@alice:mtx01.cc，多个用逗号分隔" clearable />
+            </Form.Item>
+          </Form>
+        )}
+        <Button block color="primary" size="large" loading={submitting} onClick={submit}>{mode === 'join' ? '加入房间' : '创建并进入'}</Button>
+      </section>
+    </Popup>
   );
 }
 
@@ -232,6 +330,8 @@ function ProfilePage() {
 function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
   const { client, session, revision } = useMatrix();
   const [text, setText] = useState('');
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const room = client?.getRoom(roomId);
   const events = useMemo(
     () => room?.getLiveTimeline().getEvents().filter((event) => event.getType() === 'm.room.message') ?? [],
@@ -251,6 +351,37 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
     }
   };
 
+  const loadOlderMessages = async () => {
+    setLoadingHistory(true);
+    try {
+      await client.scrollback(room, 30);
+    } catch {
+      Toast.show({ icon: 'fail', content: '历史消息加载失败' });
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const uploadFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const toast = Toast.show({ icon: 'loading', content: '正在上传…', duration: 0 });
+    try {
+      const response = await client.uploadContent(file, { name: file.name, type: file.type });
+      await client.sendEvent(room.roomId, 'm.room.message' as any, {
+        msgtype: file.type.startsWith('image/') ? MsgType.Image : MsgType.File,
+        body: file.name,
+        url: response.content_uri,
+        info: { mimetype: file.type, size: file.size },
+      });
+    } catch {
+      Toast.show({ icon: 'fail', content: '文件发送失败，请检查网络或服务器限制' });
+    } finally {
+      toast.close();
+    }
+  };
+
   return (
     <main className="chat-page">
       <NavBar back="消息" onBack={close} right={<button className="plain-icon" type="button"><MoreOutline /></button>}>
@@ -258,24 +389,31 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
       </NavBar>
       {room.hasEncryptionStateEvent() && <div className="secure-banner">⌁ 此会话已启用端到端加密</div>}
       <div className="message-scroller">
+        <div className="history-action"><Button size="mini" fill="none" loading={loadingHistory} onClick={loadOlderMessages}>加载更早消息</Button></div>
         {events.length === 0 && <Empty description="和大家打个招呼吧" />}
         {events.map((event) => {
           const mine = event.getSender() === session?.userId;
           const content = event.getContent();
+          const mediaUrl = typeof content.url === 'string' ? client.mxcUrlToHttp(content.url, 960, 960, 'scale') : null;
+          const image = content.msgtype === MsgType.Image && mediaUrl;
+          const file = content.msgtype === MsgType.File && mediaUrl;
           return (
             <article className={`message ${mine ? 'mine' : ''}`} key={event.getId() ?? `${event.getTs()}-${event.getSender()}`}>
               {!mine && <div className="message-avatar">{initials(event.getSender() ?? '?')}</div>}
               <div>
                 {!mine && <p className="sender-name">{event.sender?.name ?? event.getSender()}</p>}
-                <div className="bubble">{typeof content.body === 'string' ? content.body : '[暂不支持的消息]'}</div>
+                <div className={`bubble ${image ? 'image-bubble' : ''}`}>
+                  {image ? <img src={mediaUrl} alt={typeof content.body === 'string' ? content.body : '图片'} /> : file ? <a href={mediaUrl} target="_blank" rel="noreferrer">附件：{typeof content.body === 'string' ? content.body : '下载文件'}</a> : typeof content.body === 'string' ? content.body : '[暂不支持的消息]'}
+                </div>
                 <time>{displayTime(event.getTs())}</time>
               </div>
             </article>
           );
         })}
-        <InfiniteScroll loadMore={async () => { await client.scrollback(room, 30); }} hasMore={false} />
       </div>
       <footer className="composer">
+        <input ref={fileInput} className="file-input" type="file" onChange={uploadFile} />
+        <button className="attach-button" onClick={() => fileInput.current?.click()} type="button" aria-label="发送图片或文件">＋</button>
         <TextArea value={text} onChange={setText} autoSize={{ minRows: 1, maxRows: 4 }} placeholder="说点什么…" />
         <button className="send-button" onClick={send} type="button" aria-label="发送消息"><SendOutline /></button>
       </footer>
@@ -287,6 +425,7 @@ function AppShell() {
   const { state, error } = useMatrix();
   const [activeTab, setActiveTab] = useState<TabKey>('chats');
   const [activeRoomId, setActiveRoomId] = useState<string>();
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
 
   if (state === 'loading' || state === 'connecting') {
     return <div className="splash"><div className="brand-seal small">笺</div><DotLoading color="primary" /><p>{state === 'connecting' ? '正在连接 Matrix…' : '正在准备青笺…'}</p></div>;
@@ -296,7 +435,7 @@ function AppShell() {
   if (activeRoomId) return <ChatPage roomId={activeRoomId} close={() => setActiveRoomId(undefined)} />;
 
   const pages: Record<TabKey, React.ReactNode> = {
-    chats: <ChatsPage openRoom={setActiveRoomId} />,
+    chats: <ChatsPage openRoom={setActiveRoomId} openNewChat={() => setNewConversationOpen(true)} />,
     contacts: <ContactsPage />,
     discover: <DiscoverPage />,
     profile: <ProfilePage />,
@@ -304,6 +443,11 @@ function AppShell() {
   return (
     <main className="app-shell">
       <div className="app-content">{pages[activeTab]}</div>
+      <NewConversationPopup
+        visible={newConversationOpen}
+        close={() => setNewConversationOpen(false)}
+        openRoom={setActiveRoomId}
+      />
       <nav className="bottom-nav">
         <TabBar activeKey={activeTab} onChange={(key) => setActiveTab(key as TabKey)}>
           <TabBar.Item key="chats" icon={<MessageOutline />} title="消息" />
