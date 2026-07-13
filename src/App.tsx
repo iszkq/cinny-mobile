@@ -1,4 +1,4 @@
-import { ChangeEvent, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { MatrixEvent, Room } from 'matrix-js-sdk';
 import { MsgType, NotificationCountType, Preset } from 'matrix-js-sdk';
 import {
@@ -54,6 +54,37 @@ const eventText = (event?: MatrixEvent): string => {
 };
 
 const initials = (name: string): string => name.trim().slice(0, 1).toUpperCase() || 'Q';
+
+const useAuthenticatedMediaUrl = (src: string | null, accessToken?: string): string | null => {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!src) { setUrl(null); return undefined; }
+    let disposed = false;
+    let objectUrl: string | undefined;
+    void fetch(src, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined })
+      .then((response) => { if (!response.ok) throw new Error('媒体请求失败'); return response.blob(); })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (!disposed) setUrl(objectUrl);
+      })
+      .catch(() => { if (!disposed) setUrl(null); });
+    return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [accessToken, src]);
+  return url;
+};
+
+function MessageBody({ event, client, accessToken }: { event: MatrixEvent; client: NonNullable<ReturnType<typeof useMatrix>['client']>; accessToken?: string }) {
+  const content = event.getContent();
+  const mediaSource = typeof content.url === 'string'
+    ? client.mxcUrlToHttp(content.url, 960, 960, 'scale', undefined, false, true)
+    : null;
+  const mediaUrl = useAuthenticatedMediaUrl(mediaSource, accessToken);
+  const isImage = content.msgtype === MsgType.Image;
+  const isFile = content.msgtype === MsgType.File;
+  if (isImage) return mediaUrl ? <div className="bubble image-bubble"><img src={mediaUrl} alt={typeof content.body === 'string' ? content.body : '图片'} /></div> : <div className="bubble media-loading">正在加载图片…</div>;
+  if (isFile) return mediaUrl ? <div className="bubble"><a href={mediaUrl} download={typeof content.body === 'string' ? content.body : undefined}>附件：{typeof content.body === 'string' ? content.body : '下载文件'}</a></div> : <div className="bubble media-loading">正在加载附件…</div>;
+  return <div className="bubble">{typeof content.body === 'string' ? content.body : '[暂不支持的消息]'}</div>;
+}
 
 function LoginPage() {
   const { login, error, state } = useMatrix();
@@ -469,18 +500,12 @@ function ChatPage({ roomId, close }: { roomId: string; close: () => void }) {
         {events.length === 0 && <Empty description="和大家打个招呼吧" />}
         {events.map((event) => {
           const mine = event.getSender() === session?.userId;
-          const content = event.getContent();
-          const mediaUrl = typeof content.url === 'string' ? client.mxcUrlToHttp(content.url, 960, 960, 'scale') : null;
-          const image = content.msgtype === MsgType.Image && mediaUrl;
-          const file = content.msgtype === MsgType.File && mediaUrl;
           return (
             <article className={`message ${mine ? 'mine' : ''}`} key={event.getId() ?? `${event.getTs()}-${event.getSender()}`}>
               {!mine && <div className="message-avatar">{initials(event.getSender() ?? '?')}</div>}
               <div className="message-content">
                 {!mine && <p className="sender-name">{event.sender?.name ?? event.getSender()}</p>}
-                <div className={`bubble ${image ? 'image-bubble' : ''}`}>
-                  {image ? <img src={mediaUrl} alt={typeof content.body === 'string' ? content.body : '图片'} /> : file ? <a href={mediaUrl} target="_blank" rel="noreferrer">附件：{typeof content.body === 'string' ? content.body : '下载文件'}</a> : typeof content.body === 'string' ? content.body : '[暂不支持的消息]'}
-                </div>
+                <MessageBody event={event} client={client} accessToken={session?.accessToken} />
                 <time>{displayTime(event.getTs())}</time>
               </div>
               <button className="message-action" onClick={() => setActiveEvent(event)} type="button" aria-label="消息操作">⋯</button>
